@@ -51,9 +51,6 @@ class Jsonformer:
         self.temperature = temperature
         self.max_string_token_length = max_string_token_length
 
-        assert (tokenizer is not None) and (
-            encode_fn is not None | decode_fn is not None
-        ), "Cannot use both tokenizer and encode/decode functions"
         assert (encode_fn is not None) == (
             decode_fn is not None
         ), "Can only use both encoder and decoder functions"
@@ -61,7 +58,7 @@ class Jsonformer:
         self.decode_fn = decode_fn
 
     def _encode(self, prompt: str) -> Tensor:
-        if self.tokenizer is None:
+        if self.encode_fn is not None:
             return self.encode_fn(prompt)
         return {
             "input_ids": self.tokenizer.encode(
@@ -70,7 +67,7 @@ class Jsonformer:
         }
 
     def _decode(self, tokens: Tensor) -> str:
-        if self.tokenizer is None:
+        if self.decode_fn is not None:
             return self.decode_fn(tokens)
         return self.tokenizer.decode(tokens, skip_special_tokens=True)
 
