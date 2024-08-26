@@ -62,10 +62,12 @@ class Jsonformer:
 
     def _encode(self, prompt: str) -> Tensor:
         if self.tokenizer is None:
-            return self.encode_fn(prompt).to(self.model.device)
-        return self.tokenizer.encode(prompt, return_tensors="pt").to(
-            self.model.device
-        )
+            return self.encode_fn(prompt)
+        return {
+            "input_ids": self.tokenizer.encode(
+                prompt, return_tensors="pt"
+            ).to(self.model.device)
+        }
 
     def _decode(self, tokens: Tensor) -> str:
         if self.tokenizer is None:
@@ -88,7 +90,7 @@ class Jsonformer:
         self.debug("[generate_number]", prompt, is_prompt=True)
         input_tokens = self._encode(prompt)
         response = self.model.generate(
-            input_tokens,
+            **input_tokens,
             max_new_tokens=self.max_number_tokens,
             num_return_sequences=1,
             logits_processor=[self.number_logit_processor],
@@ -121,7 +123,7 @@ class Jsonformer:
         self.debug("[generate_boolean]", prompt, is_prompt=True)
 
         input_tensor = self._encode(prompt)
-        output = self.model.forward(input_tensor.to(self.model.device))
+        output = self.model.forward(**input_tensor)
         logits = output.logits[0, -1]
 
         # todo: this assumes that "true" and "false" are both tokenized to a single token
@@ -142,7 +144,7 @@ class Jsonformer:
         input_tokens = self._encode(prompt)
 
         response = self.model.generate(
-            input_tokens,
+            **input_tokens,
             max_new_tokens=self.max_string_token_length,
             num_return_sequences=1,
             temperature=self.temperature,
@@ -233,7 +235,7 @@ class Jsonformer:
             obj.pop()
             input_tokens = self._encode(input_prompt)
             response = self.model.generate(
-                input_tokens,
+                **input_tokens,
                 max_new_tokens=1,
                 num_return_sequences=1,
                 logits_processor=[self.array_end_logit_processor],
