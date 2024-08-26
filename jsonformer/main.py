@@ -1,14 +1,14 @@
-from typing import List, Union, Dict, Any
-
-from jsonformer.logits_processors import (
-    NumberStoppingCriteria,
-    OutputNumbersTokens,
-    StringStoppingCriteria,
-    OutputCommaAndBracketTokens,
-)
-from termcolor import cprint
-from transformers import PreTrainedModel, PreTrainedTokenizer
 import json
+from typing import Any, Callable, Dict, List, Union
+
+from termcolor import cprint
+from torch import Tensor
+from transformers import PreTrainedModel, PreTrainedTokenizer
+
+from jsonformer.logits_processors import (NumberStoppingCriteria,
+                                          OutputCommaAndBracketTokens,
+                                          OutputNumbersTokens,
+                                          StringStoppingCriteria)
 
 GENERATION_MARKER = "|GENERATION|"
 
@@ -28,13 +28,17 @@ class Jsonformer:
         max_number_tokens: int = 6,
         temperature: float = 1.0,
         max_string_token_length: int = 10,
+        encode_fn: Callable[[str], Tensor] = None,
+        decode_fn: Callable[[Tensor], str] = None,
     ):
         self.model = model
         self.tokenizer = tokenizer
         self.json_schema = json_schema
         self.prompt = prompt
 
-        self.number_logit_processor = OutputNumbersTokens(self.tokenizer, self.prompt)
+        self.number_logit_processor = OutputNumbersTokens(
+            self.tokenizer, self.prompt
+        )
         self.array_end_logit_processor = OutputCommaAndBracketTokens(
             self.tokenizer, self.prompt
         )
@@ -47,6 +51,27 @@ class Jsonformer:
         self.temperature = temperature
         self.max_string_token_length = max_string_token_length
 
+        assert (tokenizer is not None) and (
+            encode_fn is not None | decode_fn is not None
+        ), "Cannot use both tokenizer and encode/decode functions"
+        assert (encode_fn is not None) == (
+            decode_fn is not None
+        ), "Can only use both encoder and decoder functions"
+        self.encode_fn = encode_fn
+        self.decode_fn = decode_fn
+
+    def _encode(self, prompt: str) -> Tensor:
+        if self.tokenizer is None:
+            return self.encode_fn(prompt).to(self.model.device)
+        return self.tokenizer.encode(prompt, return_tensors="pt").to(
+            self.model.device
+        )
+
+    def _decode(self, tokens: Tensor) -> str:
+        if self.tokenizer is None:
+            return self.decode_fn(tokens)
+        return self.tokenizer.decode(tokens, skip_special_tokens=True)
+
     def debug(self, caller: str, value: str, is_prompt: bool = False):
         if self.debug_on:
             if is_prompt:
@@ -56,24 +81,26 @@ class Jsonformer:
                 cprint(caller, "green", end=" ")
                 cprint(value, "blue")
 
-    def generate_number(self, temperature: Union[float, None] = None, iterations=0):
+    def generate_number(
+        self, temperature: Union[float, None] = None, iterations=0
+    ):
         prompt = self.get_prompt()
         self.debug("[generate_number]", prompt, is_prompt=True)
-        input_tokens = self.tokenizer.encode(prompt, return_tensors="pt").to(
-            self.model.device
-        )
+        input_tokens = self._encode(prompt)
         response = self.model.generate(
             input_tokens,
             max_new_tokens=self.max_number_tokens,
             num_return_sequences=1,
             logits_processor=[self.number_logit_processor],
             stopping_criteria=[
-                NumberStoppingCriteria(self.tokenizer, len(input_tokens[0]))
+                NumberStoppingCriteria(
+                    self.tokenizer, len(input_tokens[0])
+                )
             ],
             temperature=temperature or self.temperature,
             pad_token_id=self.tokenizer.eos_token_id,
         )
-        response = self.tokenizer.decode(response[0], skip_special_tokens=True)
+        response = self._decode(response[0])
 
         response = response[len(prompt) :]
         response = response.strip().rstrip(".")
@@ -85,14 +112,15 @@ class Jsonformer:
                 raise ValueError("Failed to generate a valid number")
 
             return self.generate_number(
-                temperature=self.temperature * 1.3, iterations=iterations + 1
+                temperature=self.temperature * 1.3,
+                iterations=iterations + 1,
             )
 
     def generate_boolean(self) -> bool:
         prompt = self.get_prompt()
         self.debug("[generate_boolean]", prompt, is_prompt=True)
 
-        input_tensor = self.tokenizer.encode(prompt, return_tensors="pt")
+        input_tensor = self._encode(prompt)
         output = self.model.forward(input_tensor.to(self.model.device))
         logits = output.logits[0, -1]
 
@@ -111,9 +139,7 @@ class Jsonformer:
     def generate_string(self) -> str:
         prompt = self.get_prompt() + '"'
         self.debug("[generate_string]", prompt, is_prompt=True)
-        input_tokens = self.tokenizer.encode(prompt, return_tensors="pt").to(
-            self.model.device
-        )
+        input_tokens = self._encode(prompt)
 
         response = self.model.generate(
             input_tokens,
@@ -121,7 +147,9 @@ class Jsonformer:
             num_return_sequences=1,
             temperature=self.temperature,
             stopping_criteria=[
-                StringStoppingCriteria(self.tokenizer, len(input_tokens[0]))
+                StringStoppingCriteria(
+                    self.tokenizer, len(input_tokens[0])
+                )
             ],
             pad_token_id=self.tokenizer.eos_token_id,
         )
@@ -136,7 +164,7 @@ class Jsonformer:
         if response.shape[0] == 1:
             response = response[0]
 
-        response = self.tokenizer.decode(response, skip_special_tokens=True)
+        response = self._decode(response)
 
         self.debug("[generate_string]", "|" + response + "|")
 
@@ -192,7 +220,9 @@ class Jsonformer:
         else:
             raise ValueError(f"Unsupported schema type: {schema_type}")
 
-    def generate_array(self, item_schema: Dict[str, Any], obj: Dict[str, Any]) -> list:
+    def generate_array(
+        self, item_schema: Dict[str, Any], obj: Dict[str, Any]
+    ) -> list:
         for _ in range(self.max_array_length):
             # forces array to have at least one element
             element = self.generate_value(item_schema, obj)
@@ -201,9 +231,7 @@ class Jsonformer:
             obj.append(self.generation_marker)
             input_prompt = self.get_prompt()
             obj.pop()
-            input_tokens = self.tokenizer.encode(input_prompt, return_tensors="pt").to(
-                self.model.device
-            )
+            input_tokens = self._encode(input_prompt)
             response = self.model.generate(
                 input_tokens,
                 max_new_tokens=1,
@@ -211,7 +239,7 @@ class Jsonformer:
                 logits_processor=[self.array_end_logit_processor],
                 pad_token_id=self.tokenizer.eos_token_id,
             )
-            last_token = self.tokenizer.decode(response[0][-1])
+            last_token = self._decode(response[0][-1])
 
             if "]" in last_token:
                 break
