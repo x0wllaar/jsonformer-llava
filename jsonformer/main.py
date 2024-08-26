@@ -93,7 +93,7 @@ class Jsonformer:
             logits_processor=[self.number_logit_processor],
             stopping_criteria=[
                 NumberStoppingCriteria(
-                    self.tokenizer, len(input_tokens[0])
+                    self.tokenizer, len(input_tokens["input_ids"][0])
                 )
             ],
             temperature=temperature or self.temperature,
@@ -156,10 +156,13 @@ class Jsonformer:
         # Some models output the prompt as part of the response
         # This removes the prompt from the response if it is present
         if (
-            len(response[0]) >= len(input_tokens[0])
-            and (response[0][: len(input_tokens[0])] == input_tokens).all()
+            len(response[0]) >= len(input_tokens["input_ids"][0])
+            and (
+                response[0][: len(input_tokens["input_ids"][0])]
+                == input_tokens["input_ids"]
+            ).all()
         ):
-            response = response[0][len(input_tokens[0]) :]
+            response = response[0][len(input_tokens["input_ids"][0]) :]
         if response.shape[0] == 1:
             response = response[0]
 
